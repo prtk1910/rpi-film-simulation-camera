@@ -24,6 +24,7 @@ Built for Raspberry Pi 5 with the HQ Camera attachment. This project was inspire
 - 3.5" GPIO touchscreen display, 480x320
 - Power source (I used a PD compatible power bank)
 - Momentary Switch @ GPIO 26 (optional, create a UI shutter button if not using one)
+- 3D Printed case for the build (I used https://www.thingiverse.com/thing:6571150 and https://www.thingiverse.com/thing:4878249 and hot glued them together)
 
 ## Installation
 
