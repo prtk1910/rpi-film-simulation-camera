@@ -15,6 +15,19 @@ Built for Raspberry Pi 5 with the HQ Camera attachment. This project was inspire
 - Pro-Mist bloom effect toggle for shoot-mode output
 - Capture to PNG files in `/home/pi/Pictures`
 
+## Film Simulations
+
+The script includes the following film simulation profiles:
+
+- Standard
+- Classic Chrome
+- Kodak Portra
+- Fuji Velvia
+- Fuji Astia
+- Ilford B&W
+- Kodak Gold
+- CineStill 800T
+
 ## Hardware
 
 - Raspberry Pi 5 (can use previous models as well)
