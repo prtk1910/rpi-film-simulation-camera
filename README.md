@@ -2,7 +2,7 @@
 
 Open source Raspberry Pi camera script with film simulation, tap-to-zoom, focus peaking, manual shutter control, and on-screen exposure tuning.
 
-Built for Raspberry Pi 5 with the HQ Camera attachment. This project was inspired by the camera builds and film simulation ideas shared by [Camera Hacks by Malcolm Jay](https://substack.com/@camerahacksbymalcolmjay).
+Built for Raspberry Pi 5 with the HQ Camera attachment. This project was inspired by the camera builds and film simulation ideas shared by [Camera Hacks by Malcolm Jay](https://substack.com/@camerahacksbymalcolmjay), [this](https://substack.com/home/post/p-171702270?source=queue) one in particular.
 
 ## Features
 
@@ -17,11 +17,13 @@ Built for Raspberry Pi 5 with the HQ Camera attachment. This project was inspire
 
 ## Hardware
 
-- Raspberry Pi 5
+- Raspberry Pi 5 (can use previous models as well)
 - Official Raspberry Pi HQ Camera (IMX477)
 - 6mm M12 mount lens
 - Optionally compatible with C mount HQ camera and C mount lenses
 - 3.5" GPIO touchscreen display, 480x320
+- Power source (I used a PD compatible power bank)
+- Momentary Switch @ GPIO 26 (optional, create a UI shutter button if not using one)
 
 ## Installation
 
