@@ -1,4 +1,4 @@
-# Open-Source Film Simulation capable RPi Camera
+# Open-Source Film Simulation Capable RPi Camera
 
 Open source Raspberry Pi camera script with film simulation, tap-to-zoom, focus peaking, manual shutter control, and on-screen exposure tuning.
 
