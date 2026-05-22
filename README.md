@@ -79,8 +79,12 @@ Restart=on-failure
 RestartSec=5
 User=pi
 Environment=DISPLAY=:0
-Environment=SDL_VIDEODRIVER=fbcon
-Environment=SDL_FBDEV=/dev/fb1
+#Environment=SDL_VIDEODRIVER=fbcon
+#Environment=SDL_FBDEV=/dev/fb1
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WAYLAND_DISPLAY=wayland-1
+Environment=DISPLAY=:0
+Environment=LIBGL_ALWAYS_SOFTWARE=1
 
 [Install]
 WantedBy=multi-user.target
