@@ -80,6 +80,9 @@ def _on_released():
 
     press_duration = time.time() - press_start_time
 
+    if press_duration >= 10.0:
+        return # Power off is handled by the main loop
+
     if press_duration > 5:
         global shutter_set_mode
         shutter_set_mode = False
@@ -661,6 +664,15 @@ cv2.setMouseCallback("Camera", _on_mouse, btn_bounds)
 # ============================================================
 canvas = np.zeros((SCREEN_H, SCREEN_W, 3), dtype=np.uint8)
 while True:
+
+    if button.is_pressed and press_start_time > 0 and (time.time() - press_start_time) >= 10.0:
+        print("[System] Powering off...")
+        canvas[:] = 0
+        cv2.putText(canvas, "Shutting down...", (100, 160), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.imshow("Camera", canvas)
+        cv2.waitKey(100)
+        os.system("sudo poweroff")
+        break
 
     if sleep_mode:
         canvas[:] = 0
