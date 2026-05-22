@@ -34,7 +34,7 @@ The script includes the following film simulation profiles:
 - Official Raspberry Pi HQ Camera (IMX477)
 - 6mm M12 mount lens
 - Optionally compatible with C mount HQ camera and C mount lenses
-- 3.5" GPIO touchscreen display, 480x320
+- 3.5" GPIO touchscreen display, 480x320 ([Setup Guide](https://www.reddit.com/r/raspberry_pi/comments/1bnav0y/i_finally_have_the_35inch_gpio_spi_lcd_working/))
 - Power source (I used a PD compatible power bank)
 - Momentary Switch @ GPIO 26 (optional, create a UI shutter button if not using one)
 - 3D Printed case for the build (I used https://www.thingiverse.com/thing:6571150 and https://www.thingiverse.com/thing:4878249 and hot glued them together)
