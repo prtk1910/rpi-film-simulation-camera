@@ -571,7 +571,7 @@ def draw_toggle_button(canvas, label, is_active, x, y):
 picam2 = Picamera2()
 
 FULL_W, FULL_H        = 4056, 3040
-preview_size          = (1920, 1280)
+preview_size          = (480, 320)
 DEFAULT_FRAME_LIMITS  = (125, 16667)   # ~1/8000s – ~1/60s
 
 preview_config = picam2.create_preview_configuration(
