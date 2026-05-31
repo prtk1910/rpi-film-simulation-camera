@@ -475,11 +475,6 @@ def draw_toggle_button(canvas, label, is_active, x, y):
 # ============================================================
 #  CAMERA SETUP
 #
-#  Rotation: The IMX477 on many Pi Zero mounts is physically
-#  rotated 90° CCW relative to the screen. We apply
-#  Transform(rotation=270) in both configs so the ISP rotates
-#  the image before we ever see it — zero extra CPU cost.
-#
 #  Memory: Full 12MP stills (4056x3040 = ~47 MB DMA) require
 #  stopping the preview stream first to free its buffers.
 #  buffer_count=2 on preview keeps memory footprint small.
@@ -492,10 +487,10 @@ FULL_W, FULL_H       = 4056, 3040
 DEFAULT_FRAME_LIMITS = (125, 16667)
 
 preview_config = picam2.create_preview_configuration(
-    main={"size": (SCREEN_W, SCREEN_H), "format": "BGR888"},
+    main={"size": (SCREEN_W, SCREEN_H), "format": "RGB888"},
     lores=None, display=None,
     buffer_count=2,          # minimum buffers = less DMA memory held
-    transform=Transform(rotation=270),  # correct 270° CCW sensor rotation
+    #transform=Transform(rotation=270),  # correct 270° CCW sensor rotation
     controls={
         "AeMeteringMode":      2,
         "NoiseReductionMode":  0,
@@ -504,8 +499,8 @@ preview_config = picam2.create_preview_configuration(
 )
 
 still_config = picam2.create_still_configuration(
-    main={"size": (FULL_W, FULL_H), "format": "BGR888"},
-    transform=Transform(rotation=270),  # same correction for stills
+    main={"size": (FULL_W, FULL_H), "format": "RGB888"},
+    #transform=Transform(rotation=270),  # same correction for stills
     controls={
         "AeMeteringMode":      2,
         "NoiseReductionMode":  0,
