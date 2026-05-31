@@ -24,13 +24,14 @@ from picamera2 import Picamera2
 PICTURES_DIR = "/home/pi/Pictures"
 
 SCREEN_W, SCREEN_H = 480, 320
-PREVIEW_W, PREVIEW_H = 426, 320  # Active 4:3 preview area scaled to fit 480x320
+PREVIEW_W, PREVIEW_H = 426, 320
 BAR_H      = 40
 FILM_BTN_W = 180
 FILM_BTN_H = 42
 
-PEAK_EVERY     = 4    # recompute focus peaking every N frames
-PEAK_THRESHOLD = 28   # raise = fewer highlights, lower = more
+PEAK_EVERY     = 6     # recompute focus peaking every N frames (higher = faster)
+PEAK_THRESHOLD = 45    # higher = fewer, subtler highlights (was 28)
+PEAK_BLEND     = 0.15  # how strongly peaking overlays on image (was 0.3)
 
 EV_OPTIONS = [-2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0]
 current_ev_idx = 4
@@ -62,7 +63,6 @@ btn_bounds_meter = {"bx1": 0, "bx2": 0, "by1": 0, "by2": 0}
 
 def _lut_from_curve(pts):
     xs = np.array([p[0] for p in pts], dtype=np.float32)
-    xs = np.array([p[0] for p in pts], dtype=np.float32)
     ys = np.array([p[1] for p in pts], dtype=np.float32)
     return np.clip(np.interp(np.arange(256), xs, ys), 0, 255).astype(np.uint8)
 
@@ -89,27 +89,27 @@ _LUT_KG_B = _lut_from_curve([(0,20),(64,60),(128,110),(192,162),(255,210)])
 _LUT_KG_G = _lut_from_curve([(0,10),(64,76),(128,132),(192,194),(255,248)])
 _LUT_KG_R = _lut_from_curve([(0,15),(64,85),(128,142),(192,205),(255,255)])
 
-# --- Vignette masks (Precomputed as 3-channel uint8 arrays to exploit cv2.multiply) ---
+# --- Vignette masks ---
 def _make_vignette_mask(w, h, strength):
-    Y, X  = np.ogrid[:h, :w]
-    dist  = np.sqrt(((X - w/2)/(w/2))**2 + ((Y - h/2)/(h/2))**2)
-    mask  = (1.0 - np.clip(dist * strength, 0, 1))
+    Y, X     = np.ogrid[:h, :w]
+    dist     = np.sqrt(((X - w/2)/(w/2))**2 + ((Y - h/2)/(h/2))**2)
+    mask     = 1.0 - np.clip(dist * strength, 0, 1)
     mask_3ch = np.stack([mask, mask, mask], axis=-1)
     return (mask_3ch * 255).astype(np.uint8)
 
 _VIG_MASK_PREVIEW_KP = _make_vignette_mask(PREVIEW_W, PREVIEW_H, 0.25)
 _VIG_MASK_PREVIEW_KG = _make_vignette_mask(PREVIEW_W, PREVIEW_H, 0.30)
 
-# --- Grain Buffers (Separated into Add and Subtract arrays to remain fully uint8) ---
+# --- Grain buffers (add/sub split avoids float32) ---
 _noise_kg = np.random.normal(0, 4, (PREVIEW_H, PREVIEW_W, 3))
-_GRAIN_KG_ADD = np.clip(_noise_kg, 0, 255).astype(np.uint8)
+_GRAIN_KG_ADD = np.clip( _noise_kg, 0, 255).astype(np.uint8)
 _GRAIN_KG_SUB = np.clip(-_noise_kg, 0, 255).astype(np.uint8)
 
 _noise_ib = np.random.normal(0, 5, (PREVIEW_H, PREVIEW_W, 3))
-_GRAIN_IB_ADD = np.clip(_noise_ib, 0, 255).astype(np.uint8)
+_GRAIN_IB_ADD = np.clip( _noise_ib, 0, 255).astype(np.uint8)
 _GRAIN_IB_SUB = np.clip(-_noise_ib, 0, 255).astype(np.uint8)
 
-# --- Static Canvas Buffer (Reused every frame) ---
+# --- Static canvas buffer ---
 _canvas = np.zeros((SCREEN_H, SCREEN_W, 3), dtype=np.uint8)
 
 # --- Text block cache ---
@@ -124,17 +124,19 @@ def _apply_channel_luts(img, lb, lg, lr):
     return cv2.merge([cv2.LUT(b, lb), cv2.LUT(g, lg), cv2.LUT(r, lr)])
 
 def _sat_fast(img, scale):
-    """Changes saturation by blending with grayscale version. Avoids heavy HSV math."""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    """Saturation via grayscale blend — avoids HSV round-trip."""
+    gray    = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray_3ch = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
     return cv2.addWeighted(img, scale, gray_3ch, 1.0 - scale, 0)
 
 def _vignette_fast(img, mask_u8):
-    """Apply a precomputed uint8 vignette mask using optimized C-level scaling."""
-    return cv2.multiply(img, mask_u8, scale=1.0/255.0)
+    h, w = img.shape[:2]
+    mh, mw = mask_u8.shape[:2]
+    # Clamp mask to actual image size (handles zoom crop size mismatches)
+    m = mask_u8[:h, :w] if (h <= mh and w <= mw) else cv2.resize(mask_u8, (w, h), interpolation=cv2.INTER_NEAREST)
+    return cv2.multiply(img, m, scale=1.0/255.0)
 
 def _vignette_still(img, strength):
-    """Vignette for full-res stills — mask computed on demand."""
     h, w  = img.shape[:2]
     Y, X  = np.ogrid[:h, :w]
     dist  = np.sqrt(((X-w/2)/(w/2))**2 + ((Y-h/2)/(h/2))**2)
@@ -142,11 +144,13 @@ def _vignette_still(img, strength):
     return np.clip(img.astype(np.float32) * mask, 0, 255).astype(np.uint8)
 
 def _grain_fast(img, g_add, g_sub):
-    """Add precomputed grain buffer without converting arrays to float32."""
+    h, w = img.shape[:2]
+    gh, gw = g_add.shape[:2]
+    if h != gh or w != gw:
+        return img  # size guard during zoom
     return cv2.subtract(cv2.add(img, g_add), g_sub)
 
 def _grain_still(img, amount):
-    """Grain for full-res stills — fresh noise each shot."""
     noise = np.random.normal(0, amount, img.shape).astype(np.float32)
     return np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
 
@@ -221,12 +225,12 @@ def profile_kodak_gold(img, preview=True):
 
 FILM_PROFILES = [
     ("Standard",       profile_standard,       (180, 180, 180)),
-    ("Classic Chrome", profile_classic_chrome, ( 80, 180, 160)),
-    ("Kodak Portra",   profile_kodak_portra,   ( 40, 140, 230)),
-    ("Fuji Velvia",    profile_fuji_velvia,    ( 30, 200,  90)),
-    ("Fuji Astia",     profile_fuji_astia,     (200, 160,  80)),
-    ("Ilford B&W",     profile_ilford_bw,      (210, 210, 210)),
-    ("Kodak Gold",     profile_kodak_gold,     (  0, 190, 230)),
+    ("Classic Chrome", profile_classic_chrome,  ( 80, 180, 160)),
+    ("Kodak Portra",   profile_kodak_portra,    ( 40, 140, 230)),
+    ("Fuji Velvia",    profile_fuji_velvia,     ( 30, 200,  90)),
+    ("Fuji Astia",     profile_fuji_astia,      (200, 160,  80)),
+    ("Ilford B&W",     profile_ilford_bw,       (210, 210, 210)),
+    ("Kodak Gold",     profile_kodak_gold,      (  0, 190, 230)),
 ]
 current_profile_idx = 0
 
@@ -369,24 +373,30 @@ def format_shutter(us):
     return f"1/{int(round(1e6/us))}s" if us and us > 0 else "Auto"
 
 # ============================================================
-#  FOCUS PEAKING — Half-res integer Sobel
+#  FOCUS PEAKING — toned down, half-res, cached
+#  PEAK_THRESHOLD: higher = fewer edges highlighted
+#  PEAK_BLEND:     lower  = subtler green overlay
 # ============================================================
 def apply_focus_peaking(frame_bgr):
-    h, w    = frame_bgr.shape[:2]
-    half    = cv2.resize(frame_bgr, (w//2, h//2), interpolation=cv2.INTER_NEAREST)
-    gray_s  = cv2.cvtColor(half, cv2.COLOR_BGR2GRAY)
-    blur    = cv2.GaussianBlur(gray_s, (3, 3), 0)
-    gx      = cv2.Sobel(blur, cv2.CV_16S, 1, 0, ksize=3)
-    gy      = cv2.Sobel(blur, cv2.CV_16S, 0, 1, ksize=3)
-    mag     = cv2.addWeighted(cv2.convertScaleAbs(gx), 0.5, cv2.convertScaleAbs(gy), 0.5, 0)
+    h, w   = frame_bgr.shape[:2]
+    half   = cv2.resize(frame_bgr, (w//2, h//2), interpolation=cv2.INTER_NEAREST)
+    gray_s = cv2.cvtColor(half, cv2.COLOR_BGR2GRAY)
+    blur   = cv2.GaussianBlur(gray_s, (3, 3), 0)
+    gx     = cv2.Sobel(blur, cv2.CV_16S, 1, 0, ksize=3)
+    gy     = cv2.Sobel(blur, cv2.CV_16S, 0, 1, ksize=3)
+    mag    = cv2.addWeighted(cv2.convertScaleAbs(gx), 0.5,
+                             cv2.convertScaleAbs(gy), 0.5, 0)
     _, mask_s = cv2.threshold(mag, PEAK_THRESHOLD, 255, cv2.THRESH_BINARY)
-    mask      = cv2.resize(mask_s, (w, h), interpolation=cv2.INTER_NEAREST)
-    overlay   = frame_bgr.copy()
-    overlay[mask > 0] = (0, 255, 0)
-    return cv2.addWeighted(frame_bgr, 0.7, overlay, 0.3, 0)
+    # Erode to remove speckle noise before upscaling
+    mask_s = cv2.erode(mask_s, np.ones((2, 2), np.uint8), iterations=1)
+    mask   = cv2.resize(mask_s, (w, h), interpolation=cv2.INTER_NEAREST)
+    # Subtle green tint rather than solid green replacement
+    overlay          = frame_bgr.copy()
+    overlay[mask > 0] = (0, 200, 0)
+    return cv2.addWeighted(frame_bgr, 1.0 - PEAK_BLEND, overlay, PEAK_BLEND, 0)
 
 # ============================================================
-#  HISTOGRAM — Fully Vectorized (No Loops, No Percentiles)
+#  HISTOGRAM — fully vectorised
 # ============================================================
 _HIST_W = 128
 
@@ -394,22 +404,16 @@ def draw_histogram(gray, height=BAR_H, width=_HIST_W):
     hist  = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
     bsz   = 256 // width
     comp  = hist[:bsz*width].reshape(width, bsz).mean(axis=1)
-    
-    dmax = comp.max()
-    if dmax < 50.0: dmax = 50.0
+    dmax  = max(comp.max(), 50.0)
     scale = (height - 4) / dmax
     bars  = np.minimum((comp * scale).astype(np.int32), height - 4)
-    
-    # Vectorized canvas drawing entirely in NumPy C-implementation
     img   = np.zeros((height, width, 3), dtype=np.uint8)
-    Y = np.arange(height).reshape(height, 1)
-    X_threshold = (height - 1 - bars).reshape(1, width)
-    mask = Y >= X_threshold
-    img[mask] = [200, 200, 200]
+    Y     = np.arange(height).reshape(height, 1)
+    img[Y >= (height - 1 - bars).reshape(1, width)] = [200, 200, 200]
     return img
 
 # ============================================================
-#  TEXT BLOCK — Cached string layouts
+#  TEXT BLOCK — cached
 # ============================================================
 def make_text_block(lines, font_scale=0.42, thickness=1, max_h=BAR_H-6):
     key = "|".join(lines)
@@ -433,19 +437,15 @@ def make_text_block(lines, font_scale=0.42, thickness=1, max_h=BAR_H-6):
     return img
 
 # ============================================================
-#  BUTTON DRAWING — Optimized Alpha Blends
+#  BUTTON DRAWING
 # ============================================================
-
 def draw_film_button(canvas, name, accent_bgr, x, y):
     w, h = FILM_BTN_W, FILM_BTN_H
     ch_h, cw = canvas.shape[:2]
     if x+w > cw: w = cw-x
     if y+h > ch_h: h = ch_h-y
     if w <= 0 or h <= 0: return (x, y, x, y)
-    
-    # In-place darkening pass using fast integer scale logic (No addWeighted array allocs)
     canvas[y:y+h, x:x+w] = cv2.convertScaleAbs(canvas[y:y+h, x:x+w], alpha=0.40)
-    
     cv2.rectangle(canvas, (x,y), (x+w-1,y+h-1), accent_bgr, 2)
     perf_w, perf_h = 6, 5
     n_perfs = max(2, h//12); spacing = h//(n_perfs+1)
@@ -463,9 +463,7 @@ def draw_toggle_button(canvas, label, is_active, x, y):
     if x+w > cw: w = cw-x
     if y+h > ch_h: h = ch_h-y
     if w <= 0 or h <= 0: return (x, y, x, y)
-    
     canvas[y:y+h, x:x+w] = cv2.convertScaleAbs(canvas[y:y+h, x:x+w], alpha=0.40)
-    
     accent = (0,200,0) if is_active else (100,100,100)
     cv2.rectangle(canvas, (x,y), (x+w-1,y+h-1), accent, 2)
     font = cv2.FONT_HERSHEY_SIMPLEX; fscale = 0.50
@@ -476,15 +474,28 @@ def draw_toggle_button(canvas, label, is_active, x, y):
 
 # ============================================================
 #  CAMERA SETUP
+#
+#  Rotation: The IMX477 on many Pi Zero mounts is physically
+#  rotated 90° CCW relative to the screen. We apply
+#  Transform(rotation=270) in both configs so the ISP rotates
+#  the image before we ever see it — zero extra CPU cost.
+#
+#  Memory: Full 12MP stills (4056x3040 = ~47 MB DMA) require
+#  stopping the preview stream first to free its buffers.
+#  buffer_count=2 on preview keeps memory footprint small.
 # ============================================================
+from libcamera import Transform
+
 picam2 = Picamera2()
 
 FULL_W, FULL_H       = 4056, 3040
 DEFAULT_FRAME_LIMITS = (125, 16667)
 
 preview_config = picam2.create_preview_configuration(
-    main={"size": (SCREEN_W, SCREEN_H), "format": "RGB888"},
+    main={"size": (SCREEN_W, SCREEN_H), "format": "BGR888"},
     lores=None, display=None,
+    buffer_count=2,          # minimum buffers = less DMA memory held
+    transform=Transform(rotation=270),  # correct 270° CCW sensor rotation
     controls={
         "AeMeteringMode":      2,
         "NoiseReductionMode":  0,
@@ -493,7 +504,8 @@ preview_config = picam2.create_preview_configuration(
 )
 
 still_config = picam2.create_still_configuration(
-    main={"size": (FULL_W, FULL_H)},
+    main={"size": (FULL_W, FULL_H), "format": "BGR888"},
+    transform=Transform(rotation=270),  # same correction for stills
     controls={
         "AeMeteringMode":      2,
         "NoiseReductionMode":  0,
@@ -522,7 +534,8 @@ def _apply_shutter():
     if us is None:
         picam2.set_controls({"AeEnable": True, "FrameDurationLimits": DEFAULT_FRAME_LIMITS})
     else:
-        picam2.set_controls({"AeEnable": False, "ExposureTime": int(us), "FrameDurationLimits": (int(us), int(us))})
+        picam2.set_controls({"AeEnable": False, "ExposureTime": int(us),
+                             "FrameDurationLimits": (int(us), int(us))})
 
 def _toggle_shutter_set():
     global shutter_set_mode
@@ -569,7 +582,8 @@ while True:
     if button.is_pressed and press_start_time > 0 and (time.time() - press_start_time) >= 10.0:
         print("[System] Powering off...")
         _canvas.fill(0)
-        cv2.putText(_canvas, "Shutting down...", (80, 160), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,255,255), 2, cv2.LINE_AA)
+        cv2.putText(_canvas, "Shutting down...", (80, 160),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,255,255), 2, cv2.LINE_AA)
         cv2.imshow("Camera", _canvas)
         cv2.waitKey(100)
         os.system("sudo poweroff")
@@ -592,22 +606,36 @@ while True:
             meta    = picam2.capture_metadata()
             iso     = int(meta.get("AnalogueGain", 1) * 100)
             shutter = format_shutter(meta.get("ExposureTime", 0)).replace("/", "_")
-            raw     = picam2.switch_mode_and_capture_array(still_config)
-            if raw.ndim == 3 and raw.shape[2] == 4:
-                raw = cv2.cvtColor(raw, cv2.COLOR_BGRA2BGR)
-            elif raw.ndim == 3 and raw.shape[2] == 3:
-                pass
+
+            # Free preview DMA buffers before allocating the 12MP still buffer.
+            # switch_mode_and_capture_array() holds both simultaneously — on
+            # 512 MB that causes OSError 12 (ENOMEM) at the kernel DMA heap.
+            picam2.stop()
+            picam2.configure(still_config)
+            picam2.start()
+
+            raw = picam2.capture_array()
+
             processed = apply_current_profile(raw, preview=False)
             if pro_mist_enabled:
                 processed = apply_pro_mist(processed)
+
             png_path = f"{PICTURES_DIR}/{dt}_{tag}_ISO{iso}_{shutter}.png"
             cv2.imwrite(png_path, processed)
             image_count += 1
             print(f"Captured {png_path}  (#{image_count})")
+
         except Exception as e:
             print("Capture error:", e); traceback.print_exc()
+
         finally:
-            picam2.switch_mode(preview_config)
+            # Always return to preview, even on failure
+            try:
+                picam2.stop()
+            except Exception:
+                pass
+            picam2.configure(preview_config)
+            picam2.start()
             picam2.set_controls({
                 "AeMeteringMode": METERING_MODES[current_meter_idx][1],
                 "ExposureValue":  EV_OPTIONS[current_ev_idx],
@@ -615,6 +643,7 @@ while True:
             })
             _apply_shutter()
             current_zoom_idx = 0
+            _peak_cache = None
 
     # ---- Preview frame ----
     frame = picam2.capture_array()
@@ -637,7 +666,7 @@ while True:
     new_h  = max(1, int(fh * s))
     scaled = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
 
-    # ---- Film profile (preview=True = fast path) ----
+    # ---- Film profile (fast preview path) ----
     profiled = apply_current_profile(scaled, preview=True)
 
     # ---- Focus peaking — update every PEAK_EVERY frames ----
@@ -649,7 +678,6 @@ while True:
     else:
         disp = profiled
 
-    # Gray for histogram
     gray_hist = cv2.cvtColor(profiled, cv2.COLOR_BGR2GRAY)
 
     # ---- Compose into reused canvas buffer ----
@@ -657,9 +685,9 @@ while True:
     y_off = (SCREEN_H - new_h) // 2
     _canvas[y_off:y_off+new_h, x_off:x_off+new_w] = disp
 
-    # Info bar: Fast in-place darkening pass
     bar_y = max(y_off, y_off + new_h - BAR_H)
-    _canvas[bar_y:bar_y+BAR_H, x_off:x_off+new_w] = cv2.convertScaleAbs(_canvas[bar_y:bar_y+BAR_H, x_off:x_off+new_w], alpha=0.75)
+    _canvas[bar_y:bar_y+BAR_H, x_off:x_off+new_w] = cv2.convertScaleAbs(
+        _canvas[bar_y:bar_y+BAR_H, x_off:x_off+new_w], alpha=0.75)
 
     hist_w = min(_HIST_W, new_w // 3)
     blit_add(_canvas, draw_histogram(gray_hist, height=BAR_H, width=hist_w), x_off+6, bar_y)
@@ -667,8 +695,7 @@ while True:
     shutter_us = meta.get("ExposureTime", 0)
     iso_val    = meta.get("AnalogueGain", 0) * 100
     status     = "SET" if shutter_set_mode else "RDY"
-    
-    # Stateful UI check: Only render new text assets when structural data changes
+
     current_tb_state = (status, current_shutter_idx, shutter_us, iso_val, image_count)
     if current_tb_state != _last_tb_state:
         _last_tb_state = current_tb_state
@@ -676,7 +703,7 @@ while True:
             f"{status} {SHUTTER_LABELS[current_shutter_idx]}",
             f"{format_shutter(shutter_us)} ISO{int(iso_val)} #{image_count}",
         ], max_h=BAR_H-6)
-    
+
     blit_add(_canvas, _cached_tb_img, x_off+6+hist_w+8, bar_y+(BAR_H-_cached_tb_img.shape[0])//2)
 
     # ---- Buttons ----
