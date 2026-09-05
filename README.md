@@ -13,7 +13,7 @@ Built for Raspberry Pi 5 with the HQ Camera attachment. This project was inspire
 - Tap-to-zoom focus targeting with 1x / 2x / 4x zoom
 - Focus peaking overlay for manual framing
 - Pro-Mist bloom effect toggle for shoot-mode output
-- Capture to PNG files in `/home/pi/Pictures`
+- Capture to `/home/pi/Pictures` (`camera.py` uses PNG; the Pi Zero path uses quality-92 JPEG)
 
 ## Film Simulations
 
@@ -51,6 +51,7 @@ pip3 install picamera2 gpiozero numpy --break-system-packages
 ## Setup
 
 1. Place `camera.py` in `/home/pi` or the desired working directory.
+   On an original Pi Zero W, use `camera-pi-zero.py` instead and update the service's `ExecStart` path below to match.
 2. Ensure the picture folder exists:
 
 ```bash
@@ -111,12 +112,30 @@ sudo systemctl stop camera.service
 
 - Tap the on-screen `FILM` button to cycle film profiles.
 - Tap the `Meter`, `EV`, and `WB` buttons to cycle metering, exposure compensation, and white balance.
+- In `camera-pi-zero.py`, tap `Photo: 12MP/3MP` to select the next still resolution; 12 MP is the default.
 - Tap the screen outside the UI to change the zoom anchor point and zoom level.
 - Hold the GPIO26 button for shutter-set mode, then tap to cycle shutter speed.
 - Short press the GPIO26 button to capture an image.
 
 ## Notes
 
-The script writes captures to `/home/pi/Pictures` with timestamped filenames including the selected film profile, ISO, and shutter speed.
+The scripts write captures to `/home/pi/Pictures` with timestamped filenames including the selected film profile, ISO, and shutter speed. The Pi Zero variant logs preview timing about every five seconds and prints acquisition, processing, and JPEG timing for each capture.
 
 Sample images and camera photos are included in the repository.
+
+## Experimental Pi Zero console/display setup
+
+`camera-pi-zero.py` is an experimental path for the original single-core Zero W. It keeps the existing OpenCV fullscreen window on the Wayland desktop and depends on the SPI display's kernel/DRM driver being installed and exposing that display to the compositor. The physical SPI refresh rate can remain the visible frame-rate ceiling even when the script's processing log reports a higher rate.
+
+Useful device checks are:
+
+```bash
+cat /proc/fb
+ls -l /dev/fb* /dev/dri/card* /dev/dri/renderD*
+ls -l /sys/class/drm/
+for status in /sys/class/drm/card*-*/status; do printf '%s: ' "$status"; cat "$status"; done
+```
+
+If the SPI panel is absent from these results, fix its overlay/driver setup before debugging the Python window. The exact overlay and device name depend on the panel vendor; use the display's setup guide and verify it after reboot.
+
+The service environment shown above does not create a console-only renderer. Variables such as `DISPLAY`, `WAYLAND_DISPLAY`, `SDL_VIDEODRIVER`, or `SDL_FBDEV` do not make an OpenCV HighGUI window write directly to a framebuffer. A true no-desktop implementation would need a separate direct framebuffer or DRM/KMS renderer plus touch input read and calibrated through `evdev`; that architecture is outside the current script.

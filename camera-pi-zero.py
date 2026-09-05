@@ -24,14 +24,22 @@ from picamera2 import Picamera2
 PICTURES_DIR = "/home/pi/Pictures"
 
 SCREEN_W, SCREEN_H = 480, 320
-PREVIEW_W, PREVIEW_H = 426, 320
 BAR_H      = 40
 FILM_BTN_W = 180
 FILM_BTN_H = 42
+PHOTO_BTN_W = 142
+PHOTO_BTN_H = 36
 
-PEAK_EVERY     = 6     # recompute focus peaking every N frames (higher = faster)
+# Non-standard previews are deliberately approximate on the single-core Zero.
+# Work at half the display dimensions, then upscale once for display.
+PROFILE_W, PROFILE_H = 240, 160
+
+PEAK_EVERY     = 4     # recompute only the mask every N frames
 PEAK_THRESHOLD = 45    # higher = fewer, subtler highlights (was 28)
 PEAK_BLEND     = 0.15  # how strongly peaking overlays on image (was 0.3)
+UI_EVERY       = 4
+PERF_LOG_SECS  = 5.0
+JPEG_QUALITY   = 92
 
 EV_OPTIONS = [-2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0]
 current_ev_idx = 4
@@ -48,6 +56,12 @@ press_start_time = 0.0
 image_count      = 0
 focus_peaking_enabled = True
 
+PHOTO_MODES = [
+    ("12MP", (4056, 3040)),
+    ("3MP",  (2028, 1520)),
+]
+current_photo_idx = 0
+
 os.system("unclutter &")
 os.makedirs(PICTURES_DIR, exist_ok=True)
 
@@ -56,6 +70,7 @@ btn_bounds_ev    = {"bx1": 0, "bx2": 0, "by1": 0, "by2": 0}
 btn_bounds_awb   = {"bx1": 0, "bx2": 0, "by1": 0, "by2": 0}
 btn_bounds_pm    = {"bx1": 0, "bx2": 0, "by1": 0, "by2": 0}
 btn_bounds_meter = {"bx1": 0, "bx2": 0, "by1": 0, "by2": 0}
+btn_bounds_photo = {"bx1": 0, "bx2": 0, "by1": 0, "by2": 0}
 
 # ============================================================
 #  PRECOMPUTED ASSETS (Built once at startup)
@@ -89,6 +104,23 @@ _LUT_KG_B = _lut_from_curve([(0,20),(64,60),(128,110),(192,162),(255,210)])
 _LUT_KG_G = _lut_from_curve([(0,10),(64,76),(128,132),(192,194),(255,248)])
 _LUT_KG_R = _lut_from_curve([(0,15),(64,85),(128,142),(192,205),(255,255)])
 
+def _make_channel_lut(lb, lg, lr):
+    """Build the 3-channel LUT layout accepted by cv2.LUT."""
+    return np.stack((lb, lg, lr), axis=1).reshape(256, 1, 3)
+
+_LUT_CC = _make_channel_lut(_LUT_CC_B, _LUT_CC_G, _LUT_CC_R)
+_LUT_KP = _make_channel_lut(_LUT_KP_B, _LUT_KP_G, _LUT_KP_R)
+_LUT_FV = _make_channel_lut(_LUT_FV_B, _LUT_FV_G, _LUT_FV_R)
+_LUT_FA = _make_channel_lut(_LUT_FA_B, _LUT_FA_G, _LUT_FA_R)
+_LUT_KG = _make_channel_lut(_LUT_KG_B, _LUT_KG_G, _LUT_KG_R)
+
+_LUT_SAT_072 = np.clip(np.arange(256) * 0.72, 0, 255).astype(np.uint8)
+_LUT_SAT_085 = np.clip(np.arange(256) * 0.85, 0, 255).astype(np.uint8)
+_LUT_SAT_090 = np.clip(np.arange(256) * 0.90, 0, 255).astype(np.uint8)
+_LUT_SAT_095 = np.clip(np.arange(256) * 0.95, 0, 255).astype(np.uint8)
+_LUT_SAT_145 = np.clip(np.arange(256) * 1.45, 0, 255).astype(np.uint8)
+_LUT_HUE_MINUS_3 = ((np.arange(256, dtype=np.int16) - 3) % 180).astype(np.uint8)
+
 # --- Vignette masks ---
 def _make_vignette_mask(w, h, strength):
     Y, X     = np.ogrid[:h, :w]
@@ -97,31 +129,32 @@ def _make_vignette_mask(w, h, strength):
     mask_3ch = np.stack([mask, mask, mask], axis=-1)
     return (mask_3ch * 255).astype(np.uint8)
 
-_VIG_MASK_PREVIEW_KP = _make_vignette_mask(PREVIEW_W, PREVIEW_H, 0.25)
-_VIG_MASK_PREVIEW_KG = _make_vignette_mask(PREVIEW_W, PREVIEW_H, 0.30)
+_VIG_MASK_PREVIEW_KP = _make_vignette_mask(PROFILE_W, PROFILE_H, 0.25)
+_VIG_MASK_PREVIEW_KG = _make_vignette_mask(PROFILE_W, PROFILE_H, 0.30)
 
 # --- Grain buffers (add/sub split avoids float32) ---
-_noise_kg = np.random.normal(0, 4, (PREVIEW_H, PREVIEW_W, 3))
+_noise_kg = np.random.normal(0, 4, (PROFILE_H, PROFILE_W, 3))
 _GRAIN_KG_ADD = np.clip( _noise_kg, 0, 255).astype(np.uint8)
 _GRAIN_KG_SUB = np.clip(-_noise_kg, 0, 255).astype(np.uint8)
 
-_noise_ib = np.random.normal(0, 5, (PREVIEW_H, PREVIEW_W, 3))
+_noise_ib = np.random.normal(0, 5, (PROFILE_H, PROFILE_W, 3))
 _GRAIN_IB_ADD = np.clip( _noise_ib, 0, 255).astype(np.uint8)
 _GRAIN_IB_SUB = np.clip(-_noise_ib, 0, 255).astype(np.uint8)
+del _noise_kg, _noise_ib
 
 # --- Static canvas buffer ---
 _canvas = np.zeros((SCREEN_H, SCREEN_W, 3), dtype=np.uint8)
 
 # --- Text block cache ---
 _tb_cache = {}
+_control_cache = {}
 
 # ============================================================
 #  FAST HELPERS
 # ============================================================
 
-def _apply_channel_luts(img, lb, lg, lr):
-    b, g, r = cv2.split(img)
-    return cv2.merge([cv2.LUT(b, lb), cv2.LUT(g, lg), cv2.LUT(r, lr)])
+def _apply_channel_lut(img, lut):
+    return cv2.LUT(img, lut)
 
 def _sat_fast(img, scale):
     """Saturation via grayscale blend — avoids HSV round-trip."""
@@ -136,12 +169,18 @@ def _vignette_fast(img, mask_u8):
     m = mask_u8[:h, :w] if (h <= mh and w <= mw) else cv2.resize(mask_u8, (w, h), interpolation=cv2.INTER_NEAREST)
     return cv2.multiply(img, m, scale=1.0/255.0)
 
-def _vignette_still(img, strength):
-    h, w  = img.shape[:2]
-    Y, X  = np.ogrid[:h, :w]
-    dist  = np.sqrt(((X-w/2)/(w/2))**2 + ((Y-h/2)/(h/2))**2)
-    mask  = (1.0 - np.clip(dist*strength, 0, 1)).astype(np.float32)[:, :, np.newaxis]
-    return np.clip(img.astype(np.float32) * mask, 0, 255).astype(np.uint8)
+def _vignette_still(img, strength, rows_per_chunk=128):
+    """Apply a vignette in-place without full-resolution float temporaries."""
+    h, w = img.shape[:2]
+    x_norm_sq = ((np.arange(w, dtype=np.float32) - w / 2) / (w / 2)) ** 2
+    for y1 in range(0, h, rows_per_chunk):
+        y2 = min(h, y1 + rows_per_chunk)
+        y_norm_sq = ((np.arange(y1, y2, dtype=np.float32) - h / 2) / (h / 2)) ** 2
+        dist = np.sqrt(y_norm_sq[:, np.newaxis] + x_norm_sq[np.newaxis, :])
+        mask = ((1.0 - np.clip(dist * strength, 0, 1)) * 255).astype(np.uint8)
+        mask_3ch = cv2.merge((mask, mask, mask))
+        cv2.multiply(img[y1:y2], mask_3ch, dst=img[y1:y2], scale=1.0 / 255.0)
+    return img
 
 def _grain_fast(img, g_add, g_sub):
     h, w = img.shape[:2]
@@ -150,9 +189,24 @@ def _grain_fast(img, g_add, g_sub):
         return img  # size guard during zoom
     return cv2.subtract(cv2.add(img, g_add), g_sub)
 
-def _grain_still(img, amount):
-    noise = np.random.normal(0, amount, img.shape).astype(np.float32)
-    return np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+def _grain_still(img, amount, rows_per_chunk=128):
+    """Add grain in-place using small signed stripes rather than 12 MP floats."""
+    h, w = img.shape[:2]
+    for y1 in range(0, h, rows_per_chunk):
+        y2 = min(h, y1 + rows_per_chunk)
+        noise = np.random.normal(0, amount, (y2 - y1, w, 3)).astype(np.int16)
+        add = np.clip(noise, 0, 255).astype(np.uint8)
+        sub = np.clip(-noise, 0, 255).astype(np.uint8)
+        cv2.add(img[y1:y2], add, dst=img[y1:y2])
+        cv2.subtract(img[y1:y2], sub, dst=img[y1:y2])
+    return img
+
+def _hsv_saturation(img, saturation_lut, hue_lut=None):
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    hsv[:, :, 1] = cv2.LUT(hsv[:, :, 1], saturation_lut)
+    if hue_lut is not None:
+        hsv[:, :, 0] = cv2.LUT(hsv[:, :, 0], hue_lut)
+    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
 def apply_pro_mist(img, threshold=190, glow_spread=15, blend=0.25):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -173,39 +227,31 @@ def profile_standard(img, preview=True):
     return img
 
 def profile_classic_chrome(img, preview=True):
-    out = _apply_channel_luts(img, _LUT_CC_B, _LUT_CC_G, _LUT_CC_R)
+    out = _apply_channel_lut(img, _LUT_CC)
     if preview:
         return _sat_fast(out, 0.72)
-    hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV)
-    hsv[:, :, 1] = cv2.LUT(hsv[:, :, 1], np.clip(np.arange(256)*0.72, 0, 255).astype(np.uint8))
-    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    return _hsv_saturation(out, _LUT_SAT_072)
 
 def profile_kodak_portra(img, preview=True):
-    out = _apply_channel_luts(img, _LUT_KP_B, _LUT_KP_G, _LUT_KP_R)
+    out = _apply_channel_lut(img, _LUT_KP)
     if preview:
         return _vignette_fast(_sat_fast(out, 0.85), _VIG_MASK_PREVIEW_KP)
-    hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV)
-    hsv[:, :, 1] = cv2.LUT(hsv[:, :, 1], np.clip(np.arange(256)*0.85, 0, 255).astype(np.uint8))
-    return _vignette_still(cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR), 0.25)
+    return _vignette_still(_hsv_saturation(out, _LUT_SAT_085), 0.25)
 
 def profile_fuji_velvia(img, preview=True):
-    out = _apply_channel_luts(img, _LUT_FV_B, _LUT_FV_G, _LUT_FV_R)
-    hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV).astype(np.int16)
-    hsv[:, :, 1] = np.clip((hsv[:, :, 1].astype(np.float32) * 1.45), 0, 255).astype(np.int16)
-    hsv[:, :, 0] = (hsv[:, :, 0] - 3) % 180
-    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+    out = _apply_channel_lut(img, _LUT_FV)
+    return _hsv_saturation(out, _LUT_SAT_145, _LUT_HUE_MINUS_3)
 
 def profile_fuji_astia(img, preview=True):
-    out = _apply_channel_luts(img, _LUT_FA_B, _LUT_FA_G, _LUT_FA_R)
+    out = _apply_channel_lut(img, _LUT_FA)
     if preview:
         return _sat_fast(out, 0.95)
-    hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV)
-    hsv[:, :, 1] = cv2.LUT(hsv[:, :, 1], np.clip(np.arange(256)*0.95, 0, 255).astype(np.uint8))
-    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    return _hsv_saturation(out, _LUT_SAT_095)
 
 def profile_ilford_bw(img, preview=True):
-    b, g, r = cv2.split(img)
-    pan = np.clip(0.21*r.astype(np.float32) + 0.72*g.astype(np.float32) + 0.07*b.astype(np.float32), 0, 255).astype(np.uint8)
+    pan = cv2.transform(img, np.array([[0.07, 0.72, 0.21]], dtype=np.float32))
+    if pan.ndim == 3:
+        pan = pan[:, :, 0]
     pan = cv2.LUT(pan, _LUT_IB)
     bgr = cv2.cvtColor(pan, cv2.COLOR_GRAY2BGR)
     if preview:
@@ -213,14 +259,12 @@ def profile_ilford_bw(img, preview=True):
     return _grain_still(bgr, 5)
 
 def profile_kodak_gold(img, preview=True):
-    out = _apply_channel_luts(img, _LUT_KG_B, _LUT_KG_G, _LUT_KG_R)
+    out = _apply_channel_lut(img, _LUT_KG)
     if preview:
         out = _sat_fast(out, 0.90)
         out = _vignette_fast(out, _VIG_MASK_PREVIEW_KG)
         return _grain_fast(out, _GRAIN_KG_ADD, _GRAIN_KG_SUB)
-    hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV)
-    hsv[:, :, 1] = cv2.LUT(hsv[:, :, 1], np.clip(np.arange(256)*0.90, 0, 255).astype(np.uint8))
-    out = _vignette_still(cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR), 0.30)
+    out = _vignette_still(_hsv_saturation(out, _LUT_SAT_090), 0.30)
     return _grain_still(out, 4)
 
 FILM_PROFILES = [
@@ -274,6 +318,11 @@ def toggle_pro_mist():
     global pro_mist_enabled
     pro_mist_enabled = not pro_mist_enabled
     print(f"[Pro-Mist] {'ON' if pro_mist_enabled else 'OFF'}")
+
+def toggle_photo_resolution():
+    global current_photo_idx
+    current_photo_idx = (current_photo_idx + 1) % len(PHOTO_MODES)
+    print(f"[Photo Resolution] {PHOTO_MODES[current_photo_idx][0]}")
 
 def handle_focus_tap(x, y):
     global current_zoom_idx, zoom_center
@@ -341,6 +390,7 @@ def _on_mouse(event, x, y, flags, param):
             return
         _last_tap_time = now
     if   btn_bounds["bx1"]       <= x <= btn_bounds["bx2"]       and btn_bounds["by1"]       <= y <= btn_bounds["by2"]:       cycle_film_profile()
+    elif btn_bounds_photo["bx1"] <= x <= btn_bounds_photo["bx2"] and btn_bounds_photo["by1"] <= y <= btn_bounds_photo["by2"]: toggle_photo_resolution()
     elif btn_bounds_pm["bx1"]    <= x <= btn_bounds_pm["bx2"]    and btn_bounds_pm["by1"]    <= y <= btn_bounds_pm["by2"]:    toggle_pro_mist()
     elif btn_bounds_meter["bx1"] <= x <= btn_bounds_meter["bx2"] and btn_bounds_meter["by1"] <= y <= btn_bounds_meter["by2"]: cycle_metering()
     elif btn_bounds_ev["bx1"]    <= x <= btn_bounds_ev["bx2"]    and btn_bounds_ev["by1"]    <= y <= btn_bounds_ev["by2"]:    cycle_ev()
@@ -373,11 +423,11 @@ def format_shutter(us):
     return f"1/{int(round(1e6/us))}s" if us and us > 0 else "Auto"
 
 # ============================================================
-#  FOCUS PEAKING — toned down, half-res, cached
+#  FOCUS PEAKING — toned down, half-res mask cached
 #  PEAK_THRESHOLD: higher = fewer edges highlighted
 #  PEAK_BLEND:     lower  = subtler green overlay
 # ============================================================
-def apply_focus_peaking(frame_bgr):
+def make_focus_peaking_mask(frame_bgr):
     h, w   = frame_bgr.shape[:2]
     half   = cv2.resize(frame_bgr, (w//2, h//2), interpolation=cv2.INTER_NEAREST)
     gray_s = cv2.cvtColor(half, cv2.COLOR_BGR2GRAY)
@@ -389,9 +439,11 @@ def apply_focus_peaking(frame_bgr):
     _, mask_s = cv2.threshold(mag, PEAK_THRESHOLD, 255, cv2.THRESH_BINARY)
     # Erode to remove speckle noise before upscaling
     mask_s = cv2.erode(mask_s, np.ones((2, 2), np.uint8), iterations=1)
-    mask   = cv2.resize(mask_s, (w, h), interpolation=cv2.INTER_NEAREST)
-    # Subtle green tint rather than solid green replacement
-    overlay          = frame_bgr.copy()
+    return cv2.resize(mask_s, (w, h), interpolation=cv2.INTER_NEAREST)
+
+def apply_focus_peaking_mask(frame_bgr, mask):
+    """Apply the cached mask to this frame; never return a stale image."""
+    overlay = frame_bgr.copy()
     overlay[mask > 0] = (0, 200, 0)
     return cv2.addWeighted(frame_bgr, 1.0 - PEAK_BLEND, overlay, PEAK_BLEND, 0)
 
@@ -472,24 +524,58 @@ def draw_toggle_button(canvas, label, is_active, x, y):
     cv2.putText(canvas, label, (x+(w-tw)//2, y+(h+th)//2), font, fscale, color, 1, cv2.LINE_AA)
     return (x, y, x+w, y+h)
 
+def draw_photo_button(canvas, label, x, y):
+    w, h = PHOTO_BTN_W, PHOTO_BTN_H
+    canvas[y:y+h, x:x+w] = cv2.convertScaleAbs(canvas[y:y+h, x:x+w], alpha=0.40)
+    cv2.rectangle(canvas, (x, y), (x+w-1, y+h-1), (210, 210, 210), 2)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    (tw, th), _ = cv2.getTextSize(label, font, 0.46, 1)
+    cv2.putText(canvas, label, (x+(w-tw)//2, y+(h+th)//2), font, 0.46,
+                (255, 255, 255), 1, cv2.LINE_AA)
+    return (x, y, x+w, y+h)
+
+def _get_control_tile(kind, label, state=None, accent=None):
+    """Render each control state once; only composite its tile per frame."""
+    key = (kind, label, state, accent)
+    tile = _control_cache.get(key)
+    if tile is not None:
+        return tile
+    if kind == "photo":
+        tile = np.zeros((PHOTO_BTN_H, PHOTO_BTN_W, 3), dtype=np.uint8)
+        draw_photo_button(tile, label, 0, 0)
+    else:
+        tile = np.zeros((FILM_BTN_H, FILM_BTN_W, 3), dtype=np.uint8)
+        if kind == "film":
+            draw_film_button(tile, label, accent, 0, 0)
+        else:
+            draw_toggle_button(tile, label, bool(state), 0, 0)
+    _control_cache[key] = tile
+    return tile
+
+def _place_control(canvas, tile, x, y):
+    h, w = tile.shape[:2]
+    roi = canvas[y:y+h, x:x+w]
+    cv2.convertScaleAbs(roi, dst=roi, alpha=0.40)
+    cv2.add(roi, tile, dst=roi)
+    return (x, y, x+w, y+h)
+
 # ============================================================
 #  CAMERA SETUP
 #
-#  Memory: Full 12MP stills (4056x3040 = ~47 MB DMA) require
+#  Memory: Full 12MP stills (4056x3040 = ~37 MB RGB) require
 #  stopping the preview stream first to free its buffers.
-#  buffer_count=2 on preview keeps memory footprint small.
+#  Four preview buffers keep the live stream from stalling while CPU work runs.
 # ============================================================
 from libcamera import Transform
 
 picam2 = Picamera2()
 
-FULL_W, FULL_H       = 4056, 3040
 DEFAULT_FRAME_LIMITS = (125, 16667)
 
 preview_config = picam2.create_preview_configuration(
     main={"size": (SCREEN_W, SCREEN_H), "format": "RGB888"},
     lores=None, display=None,
-    buffer_count=2,          # minimum buffers = less DMA memory held
+    buffer_count=4,
     #transform=Transform(rotation=270),  # correct 270° CCW sensor rotation
     controls={
         "AeMeteringMode":      2,
@@ -498,15 +584,18 @@ preview_config = picam2.create_preview_configuration(
     }
 )
 
-still_config = picam2.create_still_configuration(
-    main={"size": (FULL_W, FULL_H), "format": "RGB888"},
-    #transform=Transform(rotation=270),  # same correction for stills
-    controls={
-        "AeMeteringMode":      2,
-        "NoiseReductionMode":  0,
-        "FrameDurationLimits": DEFAULT_FRAME_LIMITS,
-    }
-)
+still_configs = {}
+for photo_name, photo_size in PHOTO_MODES:
+    still_configs[photo_name] = picam2.create_still_configuration(
+        main={"size": photo_size, "format": "RGB888"},
+        buffer_count=1,
+        #transform=Transform(rotation=270),  # same correction for stills
+        controls={
+            "AeMeteringMode":      2,
+            "NoiseReductionMode":  0,
+            "FrameDurationLimits": DEFAULT_FRAME_LIMITS,
+        }
+    )
 
 picam2.configure(preview_config)
 picam2.start()
@@ -567,10 +656,103 @@ cv2.setMouseCallback("Camera", _on_mouse)
 # ============================================================
 #  MAIN LOOP
 # ============================================================
-_peak_cache     = None
-_peak_frame_idx = 0
-_last_tb_state  = None
-_cached_tb_img  = None
+
+def _apply_current_camera_controls():
+    picam2.set_controls({
+        "AeMeteringMode": METERING_MODES[current_meter_idx][1],
+        "ExposureValue": EV_OPTIONS[current_ev_idx],
+        "AwbMode": AWB_MODES[current_awb_idx][1],
+    })
+    _apply_shutter()
+
+def _restore_preview_camera():
+    picam2.configure(preview_config)
+    _apply_current_camera_controls()
+    picam2.start()
+
+# The configuration carries safe startup defaults; align the running preview
+# with the labels selected by the UI before entering the loop.
+_apply_current_camera_controls()
+
+def _show_processing(photo_name):
+    _canvas.fill(18)
+    cv2.putText(_canvas, f"Processing {photo_name}...", (74, 154),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.82, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(_canvas, "Preview camera restarted", (112, 185),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (170, 170, 170), 1, cv2.LINE_AA)
+    cv2.imshow("Camera", _canvas)
+    cv2.waitKey(1)
+
+def _zoom_preview(frame):
+    """Return an exact 480x320 view; do no resize at the normal 1x path."""
+    if current_zoom_idx == 0 and frame.shape[:2] == (SCREEN_H, SCREEN_W):
+        return frame
+
+    zoom = zoom_levels[current_zoom_idx]
+    if zoom > 1.0:
+        fh, fw = frame.shape[:2]
+        crop_w = max(1, int(round(fw / zoom)))
+        crop_h = max(1, int(round(fh / zoom)))
+        cx = int(round(zoom_center[0] * (fw - 1)))
+        cy = int(round(zoom_center[1] * (fh - 1)))
+        # Clamp the crop origin, not only its far edge, so taps near an edge
+        # still produce the requested crop size and zoom factor.
+        x1 = min(max(0, cx - crop_w // 2), fw - crop_w)
+        y1 = min(max(0, cy - crop_h // 2), fh - crop_h)
+        frame = frame[y1:y1+crop_h, x1:x1+crop_w]
+
+    if frame.shape[:2] != (SCREEN_H, SCREEN_W):
+        frame = cv2.resize(frame, (SCREEN_W, SCREEN_H), interpolation=cv2.INTER_NEAREST)
+    return frame
+
+def _profile_preview(frame):
+    if current_profile_idx == 0:
+        return frame
+    small = cv2.resize(frame, (PROFILE_W, PROFILE_H), interpolation=cv2.INTER_AREA)
+    small = apply_current_profile(small, preview=True)
+    return cv2.resize(small, (SCREEN_W, SCREEN_H), interpolation=cv2.INTER_NEAREST)
+
+_perf_window_start = time.monotonic()
+_perf_frames = 0
+_perf_totals = {"acquisition": 0.0, "profile": 0.0, "peaking": 0.0, "ui_display": 0.0}
+
+def _reset_preview_perf():
+    global _perf_window_start, _perf_frames
+    _perf_window_start = time.monotonic()
+    _perf_frames = 0
+    for key in _perf_totals:
+        _perf_totals[key] = 0.0
+
+def _record_preview_perf(acquisition, profile, peaking, ui_display):
+    global _perf_frames
+    _perf_frames += 1
+    _perf_totals["acquisition"] += acquisition
+    _perf_totals["profile"] += profile
+    _perf_totals["peaking"] += peaking
+    _perf_totals["ui_display"] += ui_display
+
+def _maybe_log_preview_perf():
+    elapsed = time.monotonic() - _perf_window_start
+    if elapsed < PERF_LOG_SECS or _perf_frames == 0:
+        return
+    scale = 1000.0 / _perf_frames
+    print(
+        f"[Perf] displayed={_perf_frames / elapsed:.1f} fps "
+        f"acquisition={_perf_totals['acquisition'] * scale:.1f} ms "
+        f"profile={_perf_totals['profile'] * scale:.1f} ms "
+        f"peaking={_perf_totals['peaking'] * scale:.1f} ms "
+        f"ui/display={_perf_totals['ui_display'] * scale:.1f} ms"
+    )
+    _reset_preview_perf()
+
+_peak_mask       = None
+_peak_frame_idx  = 0
+_ui_frame_idx    = 0
+_last_tb_state   = None
+_cached_tb_img   = None
+_cached_hist_img = None
+_last_control_state = None
+_cached_controls = None
 
 while True:
     # Power-off hold (10 s)
@@ -590,145 +772,197 @@ while True:
         cv2.imshow("Camera", _canvas)
         cv2.waitKey(1)
         time.sleep(0.2)
+        _reset_preview_perf()
         continue
 
     # ---- Capture still ----
     if shoot_event.is_set() and not shutter_set_mode:
         shoot_event.clear()
-        dt  = datetime.now().strftime("%Y%m%d_%H%M%S")
-        tag = FILM_PROFILES[current_profile_idx][0].replace(" ", "_")
+        capture_started = time.monotonic()
+        dt = datetime.now().strftime("%Y%m%d_%H%M%S")
+        shot_profile_idx = current_profile_idx
+        shot_profile_name = FILM_PROFILES[shot_profile_idx][0]
+        tag = shot_profile_name.replace(" ", "_")
+        photo_name, photo_size = PHOTO_MODES[current_photo_idx]
+        shot_pro_mist = pro_mist_enabled
+        preview_restored = False
+        acquire_secs = restart_secs = process_secs = encode_secs = 0.0
+        raw = processed = still_arrays = None
         try:
-            meta    = picam2.capture_metadata()
-            iso     = int(meta.get("AnalogueGain", 1) * 100)
-            shutter = format_shutter(meta.get("ExposureTime", 0)).replace("/", "_")
-
-            # Free preview DMA buffers before allocating the 12MP still buffer.
-            # switch_mode_and_capture_array() holds both simultaneously — on
-            # 512 MB that causes OSError 12 (ENOMEM) at the kernel DMA heap.
+            acquire_start = time.monotonic()
+            # Free all preview DMA buffers before allocating one still buffer.
             picam2.stop()
-            picam2.configure(still_config)
+            picam2.configure(still_configs[photo_name])
+            _apply_current_camera_controls()
             picam2.start()
+            still_arrays, meta = picam2.capture_arrays(["main"])
+            # Own the pixels before stopping the still camera and releasing its
+            # request. This is the only full-size source copy kept for processing.
+            raw = np.array(still_arrays[0], dtype=np.uint8, copy=True)
+            acquire_secs = time.monotonic() - acquire_start
 
-            raw = picam2.capture_array()
+            restart_start = time.monotonic()
+            picam2.stop()
+            _restore_preview_camera()
+            preview_restored = True
+            restart_secs = time.monotonic() - restart_start
+            _show_processing(photo_name)
 
-            processed = apply_current_profile(raw, preview=False)
-            if pro_mist_enabled:
+            iso = int(meta.get("AnalogueGain", 1) * 100)
+            shutter = format_shutter(meta.get("ExposureTime", 0)).replace("/", "_")
+            process_start = time.monotonic()
+            processed = FILM_PROFILES[shot_profile_idx][1](raw, preview=False)
+            if shot_pro_mist:
                 processed = apply_pro_mist(processed)
+            process_secs = time.monotonic() - process_start
 
-            png_path = f"{PICTURES_DIR}/{dt}_{tag}_ISO{iso}_{shutter}.png"
-            cv2.imwrite(png_path, processed)
+            jpg_path = f"{PICTURES_DIR}/{dt}_{tag}_ISO{iso}_{shutter}.jpg"
+            encode_start = time.monotonic()
+            saved = cv2.imwrite(
+                jpg_path, processed,
+                [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY],
+            )
+            encode_secs = time.monotonic() - encode_start
+            if not saved:
+                raise OSError(f"OpenCV could not write {jpg_path}")
             image_count += 1
-            print(f"Captured {png_path}  (#{image_count})")
+            print(f"Captured {jpg_path} ({photo_size[0]}x{photo_size[1]}, #{image_count})")
 
         except Exception as e:
             print("Capture error:", e); traceback.print_exc()
 
         finally:
             # Always return to preview, even on failure
-            try:
-                picam2.stop()
-            except Exception:
-                pass
-            picam2.configure(preview_config)
-            picam2.start()
-            picam2.set_controls({
-                "AeMeteringMode": METERING_MODES[current_meter_idx][1],
-                "ExposureValue":  EV_OPTIONS[current_ev_idx],
-                "AwbMode":        AWB_MODES[current_awb_idx][1]
-            })
-            _apply_shutter()
+            if not preview_restored:
+                try:
+                    picam2.stop()
+                except Exception:
+                    pass
+                try:
+                    _restore_preview_camera()
+                    preview_restored = True
+                except Exception as recovery_error:
+                    print("Preview recovery error:", recovery_error)
+                    traceback.print_exc()
+            total_secs = time.monotonic() - capture_started
+            print(
+                f"[Capture Perf] {photo_name} acquire={acquire_secs:.2f}s "
+                f"preview-restart={restart_secs:.2f}s process={process_secs:.2f}s "
+                f"jpeg-q{JPEG_QUALITY}={encode_secs:.2f}s total={total_secs:.2f}s"
+            )
             current_zoom_idx = 0
-            _peak_cache = None
+            _peak_mask = None
+            _cached_hist_img = None
+            # Top-level loop variables otherwise retain the large arrays until
+            # the next shot on CPython.
+            raw = processed = still_arrays = None
+            _reset_preview_perf()
+
+        if not preview_restored:
+            print("[Camera] Preview could not be recovered; exiting cleanly.")
+            break
 
     # ---- Preview frame ----
-    frame = picam2.capture_array()
-    meta  = picam2.capture_metadata()
-
-    # ---- Digital zoom crop ----
-    zoom = zoom_levels[current_zoom_idx]
-    if zoom > 1.0:
-        fh, fw = frame.shape[:2]
-        cx = int(zoom_center[0] * fw); cy = int(zoom_center[1] * fh)
-        cw = int(fw / zoom);           ch = int(fh / zoom)
-        x1 = max(0, cx - cw//2);       y1 = max(0, cy - ch//2)
-        x2 = min(fw, x1 + cw);         y2 = min(fh, y1 + ch)
-        frame = frame[y1:y2, x1:x2]
-
-    # ---- Scale to screen ----
-    fh, fw = frame.shape[:2]
-    s      = min(SCREEN_W / fw, SCREEN_H / fh)
-    new_w  = max(1, int(fw * s))
-    new_h  = max(1, int(fh * s))
-    scaled = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+    acquisition_start = time.monotonic()
+    preview_arrays, meta = picam2.capture_arrays(["main"])
+    acquisition_secs = time.monotonic() - acquisition_start
 
     # ---- Film profile (fast preview path) ----
-    profiled = apply_current_profile(scaled, preview=True)
+    profile_start = time.monotonic()
+    frame = _zoom_preview(preview_arrays[0])
+    profiled = _profile_preview(frame)
+    profile_secs = time.monotonic() - profile_start
 
-    # ---- Focus peaking — update every PEAK_EVERY frames ----
+    # ---- Focus peaking — refresh only its mask, apply to every live frame ----
+    peaking_start = time.monotonic()
     if focus_peaking_enabled:
         _peak_frame_idx += 1
-        if _peak_frame_idx % PEAK_EVERY == 0 or _peak_cache is None:
-            _peak_cache = apply_focus_peaking(profiled)
-        disp = _peak_cache
+        if _peak_frame_idx % PEAK_EVERY == 0 or _peak_mask is None:
+            _peak_mask = make_focus_peaking_mask(profiled)
+        disp = apply_focus_peaking_mask(profiled, _peak_mask)
     else:
         disp = profiled
+    peaking_secs = time.monotonic() - peaking_start
 
-    gray_hist = cv2.cvtColor(profiled, cv2.COLOR_BGR2GRAY)
+    # ---- Refresh approximate UI data every few frames ----
+    ui_start = time.monotonic()
+    _ui_frame_idx += 1
+    if _ui_frame_idx % UI_EVERY == 0 or _cached_hist_img is None:
+        gray_hist = cv2.cvtColor(profiled, cv2.COLOR_BGR2GRAY)
+        _cached_hist_img = draw_histogram(gray_hist, height=BAR_H, width=_HIST_W)
 
-    # ---- Compose into reused canvas buffer ----
-    x_off = (SCREEN_W - new_w) // 2
-    y_off = (SCREEN_H - new_h) // 2
-    _canvas[y_off:y_off+new_h, x_off:x_off+new_w] = disp
+        shutter_text = format_shutter(meta.get("ExposureTime", 0))
+        iso_text = f"ISO{int(meta.get('AnalogueGain', 0) * 100)}"
+        status_text = "SET" if shutter_set_mode else "RDY"
+        current_tb_state = (
+            f"{status_text} {SHUTTER_LABELS[current_shutter_idx]}",
+            f"{shutter_text} {iso_text} #{image_count}",
+        )
+        if current_tb_state != _last_tb_state:
+            _last_tb_state = current_tb_state
+            _cached_tb_img = make_text_block(list(current_tb_state), max_h=BAR_H-6)
 
-    bar_y = max(y_off, y_off + new_h - BAR_H)
-    _canvas[bar_y:bar_y+BAR_H, x_off:x_off+new_w] = cv2.convertScaleAbs(
-        _canvas[bar_y:bar_y+BAR_H, x_off:x_off+new_w], alpha=0.75)
+        name, _, accent = FILM_PROFILES[current_profile_idx]
+        photo_label = f"Photo: {PHOTO_MODES[current_photo_idx][0]}"
+        pm_label = "Pro-Mist: ON" if pro_mist_enabled else "Pro-Mist: OFF"
+        meter_name = METERING_MODES[current_meter_idx][0]
+        ev_val = EV_OPTIONS[current_ev_idx]
+        awb_name = AWB_MODES[current_awb_idx][0]
+        control_state = (name, accent, photo_label, pm_label, pro_mist_enabled,
+                         meter_name, ev_val, awb_name)
+        if control_state != _last_control_state:
+            _last_control_state = control_state
+            _cached_controls = (
+                _get_control_tile("film", name, accent=accent),
+                _get_control_tile("photo", photo_label),
+                _get_control_tile("toggle", pm_label, state=pro_mist_enabled),
+                _get_control_tile("toggle", f"Meter: {meter_name}", state=True),
+                _get_control_tile("toggle", f"EV: {ev_val:+}", state=True),
+                _get_control_tile("toggle", f"WB: {awb_name}", state=True),
+            )
 
-    hist_w = min(_HIST_W, new_w // 3)
-    blit_add(_canvas, draw_histogram(gray_hist, height=BAR_H, width=hist_w), x_off+6, bar_y)
+    # ---- Compose cached UI assets into the current frame ----
+    _canvas[:] = disp
+    bar_y = SCREEN_H - BAR_H
+    cv2.convertScaleAbs(_canvas[bar_y:SCREEN_H], dst=_canvas[bar_y:SCREEN_H], alpha=0.75)
+    blit_add(_canvas, _cached_hist_img, 6, bar_y)
+    blit_add(_canvas, _cached_tb_img, 6+_HIST_W+8,
+             bar_y+(BAR_H-_cached_tb_img.shape[0])//2)
 
-    shutter_us = meta.get("ExposureTime", 0)
-    iso_val    = meta.get("AnalogueGain", 0) * 100
-    status     = "SET" if shutter_set_mode else "RDY"
-
-    current_tb_state = (status, current_shutter_idx, shutter_us, iso_val, image_count)
-    if current_tb_state != _last_tb_state:
-        _last_tb_state = current_tb_state
-        _cached_tb_img = make_text_block([
-            f"{status} {SHUTTER_LABELS[current_shutter_idx]}",
-            f"{format_shutter(shutter_us)} ISO{int(iso_val)} #{image_count}",
-        ], max_h=BAR_H-6)
-
-    blit_add(_canvas, _cached_tb_img, x_off+6+hist_w+8, bar_y+(BAR_H-_cached_tb_img.shape[0])//2)
-
-    # ---- Buttons ----
-    name, _, accent = FILM_PROFILES[current_profile_idx]
-    bx1,by1,bx2,by2 = draw_film_button(_canvas, name, accent, x=x_off+4, y=y_off+4)
+    film_tile, photo_tile, pm_tile, meter_tile, ev_tile, awb_tile = _cached_controls
+    bx1,by1,bx2,by2 = _place_control(_canvas, film_tile, 4, 4)
     btn_bounds.update({"bx1":bx1,"bx2":bx2,"by1":by1,"by2":by2})
 
-    pm_y = y_off+4+FILM_BTN_H+6
-    pm_label = "Pro-Mist: ON" if pro_mist_enabled else "Pro-Mist: OFF"
-    pbx1,pby1,pbx2,pby2 = draw_toggle_button(_canvas, pm_label, pro_mist_enabled, x=x_off+4, y=pm_y)
+    photo_x = SCREEN_W - PHOTO_BTN_W - 4
+    qbx1,qby1,qbx2,qby2 = _place_control(_canvas, photo_tile, photo_x, 4)
+    btn_bounds_photo.update({"bx1":qbx1,"bx2":qbx2,"by1":qby1,"by2":qby2})
+
+    pm_y = 4+FILM_BTN_H+6
+    pbx1,pby1,pbx2,pby2 = _place_control(_canvas, pm_tile, 4, pm_y)
     btn_bounds_pm.update({"bx1":pbx1,"bx2":pbx2,"by1":pby1,"by2":pby2})
 
     meter_y = pm_y+FILM_BTN_H+6
-    meter_name, _ = METERING_MODES[current_meter_idx]
-    mbx1,mby1,mbx2,mby2 = draw_toggle_button(_canvas, f"Meter: {meter_name}", True, x=x_off+4, y=meter_y)
+    mbx1,mby1,mbx2,mby2 = _place_control(_canvas, meter_tile, 4, meter_y)
     btn_bounds_meter.update({"bx1":mbx1,"bx2":mbx2,"by1":mby1,"by2":mby2})
 
     ev_y  = meter_y+FILM_BTN_H+6
-    ev_val = EV_OPTIONS[current_ev_idx]
-    ebx1,eby1,ebx2,eby2 = draw_toggle_button(_canvas, f"EV: {ev_val:+}", True, x=x_off+4, y=ev_y)
+    ebx1,eby1,ebx2,eby2 = _place_control(_canvas, ev_tile, 4, ev_y)
     btn_bounds_ev.update({"bx1":ebx1,"bx2":ebx2,"by1":eby1,"by2":eby2})
 
     awb_y = ev_y+FILM_BTN_H+6
-    awb_name, _ = AWB_MODES[current_awb_idx]
-    abx1,aby1,abx2,aby2 = draw_toggle_button(_canvas, f"WB: {awb_name}", True, x=x_off+4, y=awb_y)
+    abx1,aby1,abx2,aby2 = _place_control(_canvas, awb_tile, 4, awb_y)
     btn_bounds_awb.update({"bx1":abx1,"bx2":abx2,"by1":aby1,"by2":aby2})
 
     cv2.imshow("Camera", _canvas)
-    if cv2.waitKey(1) == 27:
+    key = cv2.waitKey(1)
+    ui_display_secs = time.monotonic() - ui_start
+    _record_preview_perf(acquisition_secs, profile_secs, peaking_secs, ui_display_secs)
+    _maybe_log_preview_perf()
+    if key == 27:
         break
 
 cv2.destroyAllWindows()
-picam2.stop()
+try:
+    picam2.stop()
+except Exception:
+    pass
