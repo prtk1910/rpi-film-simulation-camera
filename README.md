@@ -8,39 +8,39 @@ Built for Raspberry Pi 5 with the HQ Camera attachment. This project was inspire
 
 ### Raspberry Pi 5
 
-![Front of the Raspberry Pi 5 film simulation camera](images/builds/pi-5-camera-front.jpeg)
+<img src="images/builds/pi-5-camera-front.jpeg" alt="Front of the Raspberry Pi 5 film simulation camera" width="480">
 
 _The Raspberry Pi 5 build with its HQ Camera, 6 mm lens, physical shutter button, and power bank base._
 
-![Touchscreen controls on the Raspberry Pi 5 film simulation camera](images/builds/pi-5-camera-controls.jpeg)
+<img src="images/builds/pi-5-camera-controls.jpeg" alt="Touchscreen controls on the Raspberry Pi 5 film simulation camera" width="480">
 
 _The rear 3.5-inch touchscreen showing the live preview and exposure controls._
 
-![Raspberry Pi 5 film simulation camera in use](images/builds/pi-5-camera-in-use.jpeg)
+<img src="images/builds/pi-5-camera-in-use.jpeg" alt="Raspberry Pi 5 film simulation camera in use" width="480">
 
 _The handheld Raspberry Pi 5 build framing a shot through the live preview._
 
 ### Raspberry Pi Zero W
 
-![Front of the Raspberry Pi Zero W film simulation camera](images/builds/pi-zero-camera-front.jpeg)
+<img src="images/builds/pi-zero-camera-front.jpeg" alt="Front of the Raspberry Pi Zero W film simulation camera" width="480">
 
 _The compact experimental Pi Zero W build with its camera module, touchscreen, shutter button, and power bank._
 
-![Touchscreen controls on the Raspberry Pi Zero W film simulation camera](images/builds/pi-zero-camera-controls.jpeg)
+<img src="images/builds/pi-zero-camera-controls.jpeg" alt="Touchscreen controls on the Raspberry Pi Zero W film simulation camera" width="480">
 
 _The Pi Zero W rear touchscreen showing the live preview, film profile, exposure controls, and 12 MP photo mode._
 
 ## Sample Photos
 
-![Classic Chrome sample photo of the San Francisco skyline](images/samples/classic-chrome.png)
+<img src="images/samples/classic-chrome.png" alt="Classic Chrome sample photo of the San Francisco skyline" width="480">
 
 _Classic Chrome — ISO 100, 1/814 s._
 
-![Ilford black-and-white sample photo of the San Francisco skyline](images/samples/ilford-black-and-white.png)
+<img src="images/samples/ilford-black-and-white.png" alt="Ilford black-and-white sample photo of the San Francisco skyline" width="480">
 
 _Ilford B&W — ISO 100, 1/835 s._
 
-![CineStill 800T sample photo of the San Francisco skyline](images/samples/cinestill-800t.png)
+<img src="images/samples/cinestill-800t.png" alt="CineStill 800T sample photo of the San Francisco skyline" width="480">
 
 _CineStill 800T — ISO 100, 1/880 s._
 
