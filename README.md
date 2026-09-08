@@ -4,6 +4,42 @@ Open source Raspberry Pi camera script with film simulation, tap-to-zoom, focus 
 
 Built for Raspberry Pi 5 with the HQ Camera attachment. This project was inspired by the camera builds and film simulation ideas shared by [Camera Hacks by Malcolm Jay](https://substack.com/@camerahacksbymalcolmjay), [this](https://substack.com/home/post/p-171702270?source=queue) one in particular.
 
+## Camera Builds
+
+### Raspberry Pi 5
+
+![Front of the Raspberry Pi 5 film simulation camera](images/builds/pi-5-camera-front.jpeg)
+
+_The Raspberry Pi 5 build with its HQ Camera, 6 mm lens, physical shutter button, and power bank base._
+
+![Touchscreen controls on the Raspberry Pi 5 film simulation camera](images/builds/pi-5-camera-controls.jpeg)
+
+_The rear 3.5-inch touchscreen showing the live preview and exposure controls._
+
+![Raspberry Pi 5 film simulation camera in use](images/builds/pi-5-camera-in-use.jpeg)
+
+_The handheld Raspberry Pi 5 build framing a shot through the live preview._
+
+### Raspberry Pi Zero W
+
+![Front of the Raspberry Pi Zero W film simulation camera](images/builds/pi-zero-camera-front.jpeg)
+
+_The compact experimental Pi Zero W build with its camera module, touchscreen, shutter button, and power bank._
+
+## Sample Photos
+
+![Classic Chrome sample photo of the San Francisco skyline](images/samples/classic-chrome.png)
+
+_Classic Chrome — ISO 100, 1/814 s._
+
+![Ilford black-and-white sample photo of the San Francisco skyline](images/samples/ilford-black-and-white.png)
+
+_Ilford B&W — ISO 100, 1/835 s._
+
+![CineStill 800T sample photo of the San Francisco skyline](images/samples/cinestill-800t.png)
+
+_CineStill 800T — ISO 100, 1/880 s._
+
 ## Features
 
 - Live preview with film simulation profiles
