@@ -26,6 +26,10 @@ _The handheld Raspberry Pi 5 build framing a shot through the live preview._
 
 _The compact experimental Pi Zero W build with its camera module, touchscreen, shutter button, and power bank._
 
+![Touchscreen controls on the Raspberry Pi Zero W film simulation camera](images/builds/pi-zero-camera-controls.jpeg)
+
+_The Pi Zero W rear touchscreen showing the live preview, film profile, exposure controls, and 12 MP photo mode._
+
 ## Sample Photos
 
 ![Classic Chrome sample photo of the San Francisco skyline](images/samples/classic-chrome.png)
