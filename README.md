@@ -2,9 +2,21 @@
 
 Open source Raspberry Pi camera script with film simulation, tap-to-zoom, focus peaking, manual shutter control, and on-screen exposure tuning.
 
-Built for Raspberry Pi 5 with the HQ Camera attachment. This project was inspired by the camera builds and film simulation ideas shared by [Camera Hacks by Malcolm Jay](https://substack.com/@camerahacksbymalcolmjay), [this](https://substack.com/home/post/p-171702270?source=queue) one in particular.
+Built in compact Raspberry Pi Zero W and higher-performance Raspberry Pi 5 configurations with the HQ Camera attachment. This project was inspired by the camera builds and film simulation ideas shared by [Camera Hacks by Malcolm Jay](https://substack.com/@camerahacksbymalcolmjay), [this](https://substack.com/home/post/p-171702270?source=queue) one in particular.
 
 ## Camera Builds
+
+### Raspberry Pi Zero W
+
+For a new compact build, a Raspberry Pi Zero 2 W is recommended. Due to price surges, the only board I could find for this build was an original Raspberry Pi Zero W, which is what the photos and experimental script configuration show.
+
+<img src="images/builds/pi-zero-camera-front.jpeg" alt="Front of the Raspberry Pi Zero W film simulation camera" width="480">
+
+_The compact experimental Pi Zero W build with its camera module, touchscreen, shutter button, and UPS-Lite base._
+
+<img src="images/builds/pi-zero-camera-controls.jpeg" alt="Touchscreen controls on the Raspberry Pi Zero W film simulation camera" width="480">
+
+_The Pi Zero W rear touchscreen showing the live preview, film profile, exposure controls, and 12 MP photo mode._
 
 ### Raspberry Pi 5
 
@@ -19,16 +31,6 @@ _The rear 3.5-inch touchscreen showing the live preview and exposure controls._
 <img src="images/builds/pi-5-camera-in-use.jpeg" alt="Raspberry Pi 5 film simulation camera in use" width="480">
 
 _The handheld Raspberry Pi 5 build framing a shot through the live preview._
-
-### Raspberry Pi Zero W
-
-<img src="images/builds/pi-zero-camera-front.jpeg" alt="Front of the Raspberry Pi Zero W film simulation camera" width="480">
-
-_The compact experimental Pi Zero W build with its camera module, touchscreen, shutter button, and power bank._
-
-<img src="images/builds/pi-zero-camera-controls.jpeg" alt="Touchscreen controls on the Raspberry Pi Zero W film simulation camera" width="480">
-
-_The Pi Zero W rear touchscreen showing the live preview, film profile, exposure controls, and 12 MP photo mode._
 
 ## Sample Photos
 
@@ -70,6 +72,17 @@ The script includes the following film simulation profiles:
 
 ## Hardware
 
+### Raspberry Pi Zero Build
+
+- Raspberry Pi Zero 2 W recommended; this build uses an original Raspberry Pi Zero W because of price surges and availability
+- Official Raspberry Pi HQ Camera (IMX477) and a compatible Pi Zero camera ribbon cable
+- 6mm M12 mount lens, or a compatible C-mount HQ camera and lens
+- Compatible GPIO touchscreen display
+- [UPS-Lite for Raspberry Pi Zero](https://www.tindie.com/products/rachel/ups-lite-for-raspberry-pi-zero/) for battery power
+- The UPS-Lite enclosure from the [UPS-Lite 3D files](https://github.com/linshuqin329/UPS-Lite)
+- Any 3D-printed display housing that fits your display; you may need to add slits so the camera and display ribbon cables can pass through
+- Momentary switch on GPIO 26 (optional; add a UI shutter button if one is not fitted)
+
 ### Raspberry Pi 5 Build
 
 - Raspberry Pi 5
@@ -80,17 +93,6 @@ The script includes the following film simulation profiles:
 - PD-compatible power bank
 - Momentary Switch @ GPIO 26 (optional, create a UI shutter button if not using one)
 - 3D-printed case assembled from [Thingiverse design 6571150](https://www.thingiverse.com/thing:6571150) and [Thingiverse design 4878249](https://www.thingiverse.com/thing:4878249), hot-glued together
-
-### Raspberry Pi Zero W Build
-
-- Original Raspberry Pi Zero W
-- Official Raspberry Pi HQ Camera (IMX477) and a compatible Pi Zero camera ribbon cable
-- 6mm M12 mount lens, or a compatible C-mount HQ camera and lens
-- Compatible GPIO touchscreen display
-- [UPS-Lite for Raspberry Pi Zero](https://www.tindie.com/products/rachel/ups-lite-for-raspberry-pi-zero/) for battery power
-- The UPS-Lite enclosure from the [UPS-Lite 3D files](https://github.com/linshuqin329/UPS-Lite)
-- Any 3D-printed display housing that fits your display; you may need to add slits so the camera and display ribbon cables can pass through
-- Momentary switch on GPIO 26 (optional; add a UI shutter button if one is not fitted)
 
 ## Installation
 
@@ -104,7 +106,7 @@ pip3 install picamera2 gpiozero numpy --break-system-packages
 ## Setup
 
 1. Place `camera.py` in `/home/pi` or the desired working directory.
-   On an original Pi Zero W, use `camera-pi-zero.py` instead and update the service's `ExecStart` path below to match.
+   On a Pi Zero W or Pi Zero 2 W, use `camera-pi-zero.py` instead and update the service's `ExecStart` path below to match.
 2. Ensure the picture folder exists:
 
 ```bash
