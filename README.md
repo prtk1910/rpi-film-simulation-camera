@@ -70,14 +70,27 @@ The script includes the following film simulation profiles:
 
 ## Hardware
 
-- Raspberry Pi 5 (can use previous models as well)
+### Raspberry Pi 5 Build
+
+- Raspberry Pi 5
 - Official Raspberry Pi HQ Camera (IMX477)
 - 6mm M12 mount lens
 - Optionally compatible with C mount HQ camera and C mount lenses
 - 3.5" GPIO touchscreen display, 480x320 ([Setup Guide](https://www.reddit.com/r/raspberry_pi/comments/1bnav0y/i_finally_have_the_35inch_gpio_spi_lcd_working/))
-- Power source (I used a PD compatible power bank)
+- PD-compatible power bank
 - Momentary Switch @ GPIO 26 (optional, create a UI shutter button if not using one)
-- 3D Printed case for the build (I used https://www.thingiverse.com/thing:6571150 and https://www.thingiverse.com/thing:4878249 and hot glued them together)
+- 3D-printed case assembled from [Thingiverse design 6571150](https://www.thingiverse.com/thing:6571150) and [Thingiverse design 4878249](https://www.thingiverse.com/thing:4878249), hot-glued together
+
+### Raspberry Pi Zero W Build
+
+- Original Raspberry Pi Zero W
+- Official Raspberry Pi HQ Camera (IMX477) and a compatible Pi Zero camera ribbon cable
+- 6mm M12 mount lens, or a compatible C-mount HQ camera and lens
+- Compatible GPIO touchscreen display
+- [UPS-Lite for Raspberry Pi Zero](https://www.tindie.com/products/rachel/ups-lite-for-raspberry-pi-zero/) for battery power
+- The UPS-Lite enclosure from the [UPS-Lite 3D files](https://github.com/linshuqin329/UPS-Lite)
+- Any 3D-printed display housing that fits your display; you may need to add slits so the camera and display ribbon cables can pass through
+- Momentary switch on GPIO 26 (optional; add a UI shutter button if one is not fitted)
 
 ## Installation
 
